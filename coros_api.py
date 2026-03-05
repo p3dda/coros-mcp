@@ -30,6 +30,8 @@ ENDPOINTS = {
     "activity_list": "/activity/query",
     "activity_detail": "/activity/detail/query",
     "sport_types": "/activity/fit/getImportSportList",
+    "workout_list": "/training/program/query",  # POST — list/fetch workout programs
+    "workout_add": "/training/program/add",     # POST — create new structured workout
 }
 
 # Login works on teamapi.coros.com but tokens are only valid on the
@@ -349,6 +351,123 @@ async def fetch_activity_detail(auth: StoredAuth, activity_id: str, sport_type: 
     for key in ("graphList", "frequencyList", "gpsLightDuration"):
         data.pop(key, None)
     return data
+
+
+# ---------------------------------------------------------------------------
+# Workout programs  (/training/program/query + /training/program/add)
+# ---------------------------------------------------------------------------
+
+# sportType=2 = Indoor Cycling (Rollen); intensityType=6 = power in watts
+# targetType=2 = time-based (seconds); exerciseType=2 = cycling block
+
+WORKOUT_SPORT_NAMES: dict[int, str] = {
+    2: "Indoor Cycling",
+    4: "Strength",
+    100: "Running",
+    200: "Road Bike",
+    201: "Indoor Cycling (alt)",
+}
+
+
+def _parse_workout(item: dict) -> dict:
+    exercises = []
+    for ex in item.get("exercises", []):
+        exercises.append({
+            "name": ex.get("name"),
+            "duration_seconds": ex.get("targetValue"),
+            "power_low_w": ex.get("intensityValue"),
+            "power_high_w": ex.get("intensityValueExtend"),
+            "sets": ex.get("sets", 1),
+        })
+    sport = item.get("sportType")
+    return {
+        "id": str(item.get("id", "")),
+        "name": item.get("name"),
+        "sport_type": sport,
+        "sport_name": WORKOUT_SPORT_NAMES.get(sport, f"Sport {sport}"),
+        "estimated_time_seconds": item.get("estimatedTime"),
+        "exercise_count": item.get("exerciseNum", len(exercises)),
+        "exercises": exercises,
+    }
+
+
+async def fetch_workouts(auth: StoredAuth) -> list[dict]:
+    """List all user workout programs."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            _base_url(auth.region) + ENDPOINTS["workout_list"],
+            json={},
+            headers=_auth_headers(auth),
+        )
+        resp.raise_for_status()
+        body = resp.json()
+
+    if body.get("result") != "0000":
+        raise ValueError(f"Coros workout API error: {body.get('message', 'unknown error')}")
+
+    return [_parse_workout(w) for w in body.get("data", [])]
+
+
+async def create_workout(
+    auth: StoredAuth,
+    name: str,
+    steps: list[dict],
+    sport_type: int = 2,
+) -> str:
+    """
+    Create a new structured workout program.
+
+    steps: list of dicts with keys:
+      - name: str — step label (e.g. "10:00 Einfahren")
+      - duration_minutes: float — step duration in minutes
+      - power_low_w: int — lower power target in watts
+      - power_high_w: int — upper power target in watts (0 = open-ended)
+
+    Returns the new workout ID.
+    """
+    exercises = []
+    for i, step in enumerate(steps):
+        duration_s = int(step["duration_minutes"] * 60)
+        exercises.append({
+            "name": step["name"],
+            "exerciseType": 2,
+            "sportType": sport_type,
+            "intensityType": 6,           # power in watts
+            "intensityValue": step["power_low_w"],
+            "intensityValueExtend": step.get("power_high_w", 0),
+            "targetType": 2,              # time-based
+            "targetValue": duration_s,
+            "sets": 1,
+            "sortNo": 16777216 * (i + 1),
+            "restType": 3,
+            "restValue": 0,
+            "groupId": "0",
+            "isGroup": False,
+            "originId": "0",
+        })
+
+    total_seconds = sum(int(s["duration_minutes"] * 60) for s in steps)
+    payload = {
+        "name": name,
+        "sportType": sport_type,
+        "estimatedTime": total_seconds,
+        "access": 1,
+        "exercises": exercises,
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            _base_url(auth.region) + ENDPOINTS["workout_add"],
+            json=payload,
+            headers=_auth_headers(auth),
+        )
+        resp.raise_for_status()
+        body = resp.json()
+
+    if body.get("result") != "0000":
+        raise ValueError(f"Coros workout create error: {body.get('message', 'unknown error')}")
+
+    return str(body.get("data", ""))
 
 
 # ---------------------------------------------------------------------------

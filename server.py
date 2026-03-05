@@ -241,6 +241,89 @@ async def get_activity_detail(activity_id: str, sport_type: int = 0) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Tool: list_workouts
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def list_workouts() -> dict:
+    """
+    List all saved workout programs in the Coros account.
+
+    Returns
+    -------
+    dict with keys: workouts (list), count
+    Each workout contains: id, name, sport_type, sport_name,
+    estimated_time_seconds, exercise_count, exercises (list of steps with
+    name, duration_seconds, power_low_w, power_high_w)
+    """
+    auth = coros_api.get_stored_auth()
+    if auth is None:
+        return {"error": "Not authenticated.", "workouts": []}
+    try:
+        workouts = await coros_api.fetch_workouts(auth)
+        return {"workouts": workouts, "count": len(workouts)}
+    except Exception as exc:
+        return {"error": str(exc), "workouts": []}
+
+
+# ---------------------------------------------------------------------------
+# Tool: create_workout
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def create_workout(
+    name: str,
+    steps: list[dict],
+    sport_type: int = 2,
+) -> dict:
+    """
+    Create a new structured workout in the Coros account.
+
+    The workout appears in the Coros app under Workouts and can be synced
+    to the watch for guided execution.
+
+    Parameters
+    ----------
+    name : str
+        Workout name (e.g. "Z2 Erholung 60min").
+    steps : list[dict]
+        List of workout steps. Each step must have:
+          - name (str): step label, e.g. "10:00 Einfahren"
+          - duration_minutes (float): step duration in minutes
+          - power_low_w (int): lower power target in watts
+          - power_high_w (int): upper power target in watts
+        Example:
+          [
+            {"name": "Einfahren", "duration_minutes": 10, "power_low_w": 148, "power_high_w": 192},
+            {"name": "Z2 Block", "duration_minutes": 40, "power_low_w": 192, "power_high_w": 221},
+            {"name": "Ausfahren", "duration_minutes": 10, "power_low_w": 100, "power_high_w": 165},
+          ]
+    sport_type : int
+        Sport type ID. Default 2 = Indoor Cycling (Rollen).
+        Use 200 for Road Bike (outdoor), 201 for Indoor Cycling (alt).
+
+    Returns
+    -------
+    dict with keys: workout_id, name, total_minutes, steps_count, message
+    """
+    auth = coros_api.get_stored_auth()
+    if auth is None:
+        return {"error": "Not authenticated."}
+    try:
+        workout_id = await coros_api.create_workout(auth, name, steps, sport_type)
+        total_minutes = sum(s["duration_minutes"] for s in steps)
+        return {
+            "workout_id": workout_id,
+            "name": name,
+            "total_minutes": total_minutes,
+            "steps_count": len(steps),
+            "message": "Workout created. Open Coros app → Workouts to sync to watch.",
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
